@@ -188,9 +188,38 @@ func isRoutingAlias(m upstreamModel) bool {
 	return ok
 }
 
-// v3ConfigData is the subset of /v3/config data we care about.
+// v3ConfigData is the subset of /v3/config data we care about. The CN realm
+// serves its CLI models flat under data.models; the Global realm serves them
+// under data.agents[].models for the agent named "cli" (the same shape
+// WorkBuddy's product config uses), so both shapes are captured here.
 type v3ConfigData struct {
 	Models json.RawMessage `json:"models"`
+	Agents json.RawMessage `json:"agents"`
+}
+
+// cliAgentModelIDs pulls the model id list of the "cli" agent out of the
+// agents array: [{name, models:[...]}]. The Global /v3/config only names its
+// CLI models here, never flat under data.models, so this is what tells a
+// Global account's picker apart from the IDE config (which has no cli agent).
+// It returns nil when there is no cli agent, letting the caller fall back to
+// the flat data.models list.
+func cliAgentModelIDs(agents json.RawMessage) []string {
+	if len(agents) == 0 {
+		return nil
+	}
+	var list []struct {
+		Name   string   `json:"name"`
+		Models []string `json:"models"`
+	}
+	if json.Unmarshal(agents, &list) != nil {
+		return nil
+	}
+	for _, a := range list {
+		if a.Name == "cli" {
+			return a.Models
+		}
+	}
+	return nil
 }
 
 // -----------------------------------------------------------------------------
@@ -210,12 +239,22 @@ type v3ConfigData struct {
 // not hy4-preview-f. Neither is a superset, so a single source silently drops
 // models the account can serve.
 func fetchRemoteModels(sa *storedAuth) (primary []upstreamModel, supplements []upstreamModel, err error) {
-	headers := func(r *http.Request) { backendHeaders(r, sa) }
-	base := baseFor(sa.Region)
+	base := resolveBase(sa.Region)
+	// The Global realm's /v3/config only returns the CLI agent's model list
+	// (data.agents[].models) under a WorkBuddy User-Agent; a CodeBuddy UA
+	// gets the IDE config without any cli agent. The CN realm keeps the
+	// CodeBuddy UA. This mirrors magpie's workbuddy_models.go.
+	configHeaders := func(r *http.Request) { backendHeaders(r, sa) }
+	if normalizeRegion(sa.Region) == regionGlobal {
+		configHeaders = func(r *http.Request) {
+			backendHeaders(r, sa)
+			r.Header.Set("User-Agent", clientUAGlobal)
+		}
+	}
 	client := discoveryHTTPClient()
 
-	v3, v3Raw, v3Err := fetchCatalogRaw(client, http.MethodGet, base+pathConfigV3, headers)
-	console, consoleRaw, consoleErr := fetchCatalogRaw(client, http.MethodGet, base+pathConsoleModels, headers)
+	v3, v3Raw, v3Err := fetchCatalogRaw(client, http.MethodGet, base+pathConfigV3, configHeaders)
+	console, consoleRaw, consoleErr := fetchCatalogRaw(client, http.MethodGet, base+pathConsoleModels, configHeaders)
 
 	primary = mergeCatalogs(console, v3)
 
@@ -272,7 +311,7 @@ func fetchCatalogRaw(client *http.Client, method, url string, headers func(*http
 func fetchCrossRealmCatalog(client *http.Client, sa *storedAuth) ([]upstreamModel, json.RawMessage) {
 	other := otherRegion(sa.Region)
 	headers := func(r *http.Request) { backendHeadersFor(r, sa, other) }
-	data, _, err := doJSON(client, http.MethodGet, baseFor(other)+pathConfigV3, headers, nil)
+	data, _, err := doJSON(client, http.MethodGet, resolveBase(other)+pathConfigV3, headers, nil)
 	if err != nil {
 		return nil, nil
 	}
@@ -604,14 +643,52 @@ func extractModels(raw json.RawMessage) []upstreamModel {
 	if len(raw) == 0 {
 		return nil
 	}
-	// /v3/config wraps the list in data.models.
+	// /v3/config wraps the list in data.models, and on the Global realm also
+	// names the CLI models under data.agents[].models for the "cli" agent.
+	// The cli agent is authoritative for the picker (it is what WorkBuddy's
+	// product config uses), so prefer its id list and backfill details from
+	// the flat data.models array.
 	var cfg v3ConfigData
-	if err := json.Unmarshal(raw, &cfg); err == nil && len(cfg.Models) > 0 {
+	if err := json.Unmarshal(raw, &cfg); err == nil && len(cfg.Models) > 0 || len(cfg.Agents) > 0 {
+		if cliIDs := cliAgentModelIDs(cfg.Agents); len(cliIDs) > 0 {
+			return cliModels(cliIDs, decodeModelList(cfg.Models, 0))
+		}
 		if models := decodeModelList(cfg.Models, 0); len(models) > 0 {
 			return models
 		}
 	}
 	return decodeModelList(raw, 0)
+}
+
+// cliModels orders the flat model specs by the cli agent's id list and drops
+// any id the agent did not name, so the published order and membership match
+// WorkBuddy's picker rather than the flat array's (which may include IDE-only
+// or service models). A spec missing from the flat array is kept with its id
+// and a default name, so a config that ships the id list but omits the detail
+// block still publishes the model.
+func cliModels(ids []string, specs []upstreamModel) []upstreamModel {
+	byID := make(map[string]upstreamModel, len(specs))
+	for _, s := range specs {
+		if s.ID != "" {
+			byID[s.ID] = s
+		}
+	}
+	out := make([]upstreamModel, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		m, ok := byID[id]
+		if !ok {
+			m = upstreamModel{ID: id}
+		}
+		if m.Name == "" {
+			m.Name = id
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func decodeModelList(raw json.RawMessage, depth int) []upstreamModel {

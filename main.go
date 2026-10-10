@@ -102,6 +102,15 @@ const (
 	loginTTL = 5 * time.Minute
 )
 
+// clientUAGlobal is the User-Agent sent to the international realm's /v3/config.
+// WorkBuddy only returns the CLI agent's model list (data.agents[].models, the
+// agent named "cli") when the request carries a WorkBuddy User-Agent; a bare or
+// CodeBuddy UA falls back to the IDE config, which has no cli agent and
+// therefore no CLI model list (see magpie's internal/provider/workbuddy_models.go).
+// The CN realm keeps clientUA. It is a var (not const) so tests can assert the
+// UA's effect without a build tag; the running plugin never reassigns it.
+var clientUAGlobal = "CLI/2.0.0 WorkBuddy/5.5.6"
+
 // providerName and buildRegion are defined in provider_cn.go / provider_global.go
 // and selected with a build tag, so one source tree builds two plugin files.
 //
@@ -119,6 +128,12 @@ func normalizeRegion(region string) string {
 	}
 	return regionCN
 }
+
+// resolveBase returns the API base URL for a realm. It is a variable (not a
+// direct call to baseFor) so tests can redirect the global realm to a local
+// mock without touching production behaviour; in the running plugin it is
+// always baseFor.
+var resolveBase = baseFor
 
 func baseFor(region string) string {
 	if normalizeRegion(region) == regionGlobal {

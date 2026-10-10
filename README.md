@@ -102,7 +102,14 @@ plugins:
 
 1. `GET https://copilot.tencent.com/v3/config` —— 每个 CodeBuddy 客户端启动时拉的远程配置,
    `data.models` 就是该账号有权使用的模型目录(带 `maxInputTokens` / `maxOutputTokens` /
-   `supportsImages` 等 serving 字段)。
+   `supportsImages` 等 serving 字段)。**国际版不同**:`www.workbuddy.ai` 的 `/v3/config`
+   在 `WorkBuddy` 的 User-Agent 下,CLI 模型列表不在平铺的 `data.models`,而在
+   `data.agents[].models` 里 `name == "cli"` 的那个 agent(与 WorkBuddy 产品配置同构),
+   模型的中文名 / 上下文窗口 / credits 等详情再由 `data.models` 数组按 `id` 匹配回填。
+   这是仿照 magpie(`yetone/magpie`,`internal/provider/workbuddy_models.go`)的加载方式:
+   WorkBuddy 只在该 UA 下返回含 `cli` agent 的产品配置;用 `CodeBuddy` UA 拿到的是 IDE
+   配置,没有 `cli` agent,也就没有 CLI 模型列表。所以国际版发 `/v3/config` 用 UA
+   `CLI/2.0.0 WorkBuddy/5.5.6`,国内版维持 `CLI/2.63.2 CodeBuddy/2.63.2`。
 2. `GET /console/enterprises/personal/models` —— 控制台目录。**两个接口都拉,然后合并**,因为
    各自都列了对方没有的模型(国内:`/v3/config` 按账号含 `hy4-preview-f` 或
    `hy4-preview-x` 其中之一,控制台是唯一带 `contextWindow` 可选预算的那个)。
@@ -127,8 +134,9 @@ plugins:
 
 插件 OAuth 登录走的是 `/v2/plugin/auth/state`(实测**不下发** session cookie,登录由用户在
 浏览器完成),所以运行时手里只有 Bearer —— 国际版这条控制台接口因此拿不到。
-但自 2026-09-24 起国际版 `/v3/config` 自身已列出 `hy4-preview`(22 个模型),
-缺的只剩试用变体 `-f` / `-x`:其中 `-f` 由同一响应里的试用横幅
+国际版的 CLI 模型目录走 `cli` agent(`data.agents[].models`,见上),实测带 Bearer 的
+`WorkBuddy` UA 下 `/v3/config` 返回 `cli` agent 共 22 个模型(含 `hy4-preview`、
+`gpt-5.5` 等);缺的只剩试用变体 `-f` / `-x`:其中 `-f` 由同一响应里的试用横幅
 (`productFeaturesConfig.ModelTrialBanner`)实时补上,见下节;仅 `-x` 仍需
 `extra_models` 显式声明。
 
