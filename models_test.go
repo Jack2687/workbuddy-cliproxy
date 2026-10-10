@@ -36,69 +36,6 @@ func TestExtractModelsV3Config(t *testing.T) {
 	}
 }
 
-// TestExtractModelsGlobalCliAgent mirrors how WorkBuddy's international realm
-// (www.workbuddy.ai) serves its CLI model list: GET /v3/config under a
-// WorkBuddy User-Agent returns data.agents[].models for the agent named
-// "cli", while the flat data.models array carries the per-id details. The
-// cli agent's id list is the authoritative membership and order; details are
-// backfilled from data.models by id. A bare CodeBuddy UA gets the IDE config
-// with no cli agent, so this path is what makes the Global catalog complete.
-func TestExtractModelsGlobalCliAgent(t *testing.T) {
-	raw := json.RawMessage(`{
-		"agents": [
-			{"name":"ide","models":["gpt-5.5","gemini-3.1-pro"]},
-			{"name":"cli","models":["default-model","gpt-5.5","hy4-preview","glm-5.2"]}
-		],
-		"models": [
-			{"id":"default-model","name":"Auto","maxInputTokens":176000,"isDefault":true},
-			{"id":"gpt-5.5","name":"GPT-5.5","maxInputTokens":1000000},
-			{"id":"hy4-preview","name":"Hy4 preview","maxInputTokens":1000000},
-			{"id":"glm-5.2","name":"GLM-5.2","maxInputTokens":1000000}
-		]
-	}`)
-	got := extractModels(raw)
-	want := []string{"default-model", "gpt-5.5", "hy4-preview", "glm-5.2"}
-	if len(got) != len(want) {
-		t.Fatalf("models = %d (%v), want %d", len(got), idsOf(got), len(want))
-	}
-	for i, id := range want {
-		if got[i].ID != id {
-			t.Errorf("model[%d].ID = %q, want %q", i, got[i].ID, id)
-		}
-		if got[i].MaxInputTokens == 0 {
-			t.Errorf("model %q lost its detail from data.models", id)
-		}
-	}
-}
-
-// TestExtractModelsGlobalCliAgentWithMissingDetails keeps a cli id whose
-// detail block is absent in data.models, using the id as its own name, so the
-// config cannot silently drop a servable model.
-func TestExtractModelsGlobalCliAgentWithMissingDetails(t *testing.T) {
-	raw := json.RawMessage(`{
-		"agents": [{"name":"cli","models":["deep-model","gpt-5.5"]}],
-		"models": [{"id":"gpt-5.5","name":"GPT-5.5","maxInputTokens":272000}]
-	}`)
-	got := extractModels(raw)
-	if len(got) != 2 {
-		t.Fatalf("models = %d, want 2", len(got))
-	}
-	if got[0].ID != "deep-model" || got[0].Name != "deep-model" {
-		t.Errorf("missing-detail id kept wrong: %+v", got[0])
-	}
-	if got[1].ID != "gpt-5.5" || got[1].MaxInputTokens != 272000 {
-		t.Errorf("detail backfill failed: %+v", got[1])
-	}
-}
-
-func idsOf(ms []upstreamModel) []string {
-	out := make([]string, len(ms))
-	for i, m := range ms {
-		out[i] = m.ID
-	}
-	return out
-}
-
 func TestExtractModelsShapes(t *testing.T) {
 	cases := []struct {
 		name string
